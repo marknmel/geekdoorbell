@@ -1,0 +1,157 @@
+substitutions:
+  watchdog_minutes: "5"   # reboot if uptime hasn't changed in this many minutes
+
+esphome:
+  name: "iot-doorbell"
+  friendly_name: Doorbell
+
+esp8266:
+  board: esp01_1m
+
+logger:
+
+api:
+  encryption:
+    key: "yourKeyHere"
+  reboot_timeout: 5min
+
+ota:
+  - platform: esphome
+    password: "yourPasswordHere"
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+
+  ap:
+    ssid: "Doorbell Fallback"
+    password: "yourFallback"
+
+captive_portal:
+
+web_server:
+  port: 80
+
+# -------------------------
+# Device supervision / diagnostics
+# -------------------------
+sensor:
+  - platform: wifi_signal
+    name: "WiFi Signal"
+    id: wifi_rssi
+    update_interval: 60s
+
+  - platform: copy
+    source_id: wifi_rssi
+    name: "WiFi Signal %"
+    unit_of_measurement: "%"
+    accuracy_decimals: 0
+    filters:
+      - lambda: |-
+          float rssi = x;
+          if (rssi <= -100) return 0.0f;
+          if (rssi >= -50)  return 100.0f;
+          return 2.0f * (rssi + 100.0f);
+
+  - platform: uptime
+    name: "Uptime"
+    id: uptime_s
+    update_interval: 60s
+
+text_sensor:
+  - platform: template
+    name: "DHCP Hostname"
+    icon: "mdi:dns"
+    update_interval: 6h
+    lambda: |-
+      #ifdef USE_ESP8266
+        return std::string(WiFi.hostname().c_str());
+      #else
+        return std::string(WiFi.getHostname());
+      #endif
+  - platform: wifi_info
+    ip_address:
+      name: "IP Address"
+    ssid:
+      name: "Connected SSID"
+    bssid:
+      name: "Connected BSSID"
+    mac_address:
+      name: "MAC Address"
+
+  - platform: version
+    name: "ESPHome Version"
+
+button:
+  - platform: restart
+    name: "Restart"
+    id: restart_btn
+
+interval:
+  - interval: 60s
+    then:
+      - lambda: |-
+          // If uptime stops changing for X minutes, reboot.
+          // This won’t help for a total hard-lock (nothing runs), but it catches “wedged” states.
+          const int threshold = atoi("${watchdog_minutes}");
+
+          float up = id(uptime_s).state;
+          if (isnan(up) || threshold <= 0) {
+            // If uptime isn't available yet (or watchdog disabled), do nothing.
+            return;
+          }
+
+          // Uptime should monotonically increase. If it doesn't, count "stuck" minutes.
+          if (up <= id(last_uptime_seen) + 0.01f) {
+            id(uptime_stuck_minutes) += 1;
+          } else {
+            id(uptime_stuck_minutes) = 0;
+            id(last_uptime_seen) = up;
+          }
+
+          if (id(uptime_stuck_minutes) >= threshold) {
+            // Reboot
+            id(restart_btn).press();
+          }
+
+# -------------------------
+# Doorbell logic
+# -------------------------
+globals:
+  - id: last_uptime_seen
+    type: float
+    restore_value: no
+    initial_value: "0.0"
+
+  - id: uptime_stuck_minutes
+    type: int
+    restore_value: no
+    initial_value: "0"
+
+  - id: ring_lockout
+    type: bool
+    restore_value: no
+    initial_value: "false"
+
+binary_sensor:
+  - platform: status
+    name: "Status"
+
+  - platform: gpio
+    name: "Doorbell Ring"
+    id: doorbell_ring
+    pin:
+      number: GPIO2
+      mode: INPUT_PULLUP
+      inverted: true
+    filters:
+      - delayed_on: 30ms
+    on_press:
+      then:
+        - lambda: |-
+            if (id(ring_lockout)) return;
+            id(ring_lockout) = true;
+        - homeassistant.event:
+            event: esphome.doorbell_pressed
+        - delay: 1500ms
+        - lambda: 'id(ring_lockout) = false;'
