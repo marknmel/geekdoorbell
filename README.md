@@ -68,7 +68,7 @@ I briefly considered using a linear regulator, but dropping that much voltage do
 
 The capacitor ended up being key — without it, the ESP-01 would brown out when the chime fired.
 
-I’ll create a schematic in case you want to try this yourself. I’ll add that to the project later.
+I’ve created a schematic in case you want to try this yourself. It's in the project repo.
 
 ---
 
